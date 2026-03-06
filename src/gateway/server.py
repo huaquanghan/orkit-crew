@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from ..core.memory import memory_manager
 from ..core.router import router
-from .routes import api_router
+from .routes import api_router, register_exception_handlers
 from .websocket import websocket_router
 
 # Configure logging
@@ -25,9 +25,11 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting Orkit Crew Gateway Server...")
     logger.info(f"Available crews: {list(router.get_available_crews().keys())}")
+    await memory_manager.initialize()
     yield
     # Shutdown
     logger.info("Shutting down Orkit Crew Gateway Server...")
+    await memory_manager.close()
 
 
 def create_app() -> FastAPI:
@@ -49,6 +51,9 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Register exception handlers
+    register_exception_handlers(app)
 
     # Include routers
     app.include_router(api_router, prefix="/api/v1")
