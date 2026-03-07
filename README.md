@@ -205,7 +205,23 @@ ruff check src/
 mypy src/
 ```
 
-## Docker
+## 🐳 Docker Support
+
+### Quick Start
+
+```bash
+docker run huaquanghan/orkit-crew orkit --help
+```
+
+### Development
+
+```bash
+docker-compose up -d
+```
+
+[See full Docker docs](docs/DOCKER.md)
+
+## Docker Commands
 
 ```bash
 # Build image
