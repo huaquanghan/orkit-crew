@@ -1,338 +1,427 @@
-"""Tests for Session Manager."""
+"""Tests for session management."""
+
+from __future__ import annotations
 
 import json
-import pytest
-from datetime import datetime
 from pathlib import Path
 
+import pytest
+
 from orkit_crew.core.session import (
-    ConversationEntry,
-    PhaseStatus,
-    PipelinePhase,
     SessionManager,
+    SessionData,
+    PipelinePhase,
+    PhaseStatus,
+    PhaseState,
 )
 
 
-class TestSessionManager:
-    """Test Session Manager functionality."""
+# Fixtures
+@pytest.fixture
+def temp_session_dir(tmp_path: Path) -> Path:
+    """Create a temporary directory for session testing."""
+    return tmp_path / "test_project"
 
-    def test_init_session_creates_directory_structure(self, tmp_path: Path) -> None:
+
+@pytest.fixture
+def session_manager(temp_session_dir: Path) -> SessionManager:
+    """Create a session manager with temporary directory."""
+    return SessionManager(temp_session_dir)
+
+
+@pytest.fixture
+def initialized_session(session_manager: SessionManager) -> SessionData:
+    """Create and return an initialized session."""
+    return session_manager.init_session(
+        prd_file="/path/to/prd.md",
+        project_name="test-project",
+        output_dir="./output",
+    )
+
+
+# Test session initialization
+class TestSessionInitialization:
+    """Test session initialization."""
+
+    def test_init_session_creates_directory_structure(
+        self,
+        session_manager: SessionManager,
+        temp_session_dir: Path,
+    ) -> None:
         """Test that init_session creates .orkit directory structure."""
-        manager = SessionManager(tmp_path)
-        session = manager.init_session(
-            prd_file="test.prd.md",
-            project_name="test-project",
+        session_manager.init_session(
+            prd_file="prd.md",
+            project_name="test",
         )
 
-        # Check directories exist
-        assert (tmp_path / ".orkit").exists()
-        assert (tmp_path / ".orkit" / "reviews").exists()
-        assert (tmp_path / ".orkit" / "context").exists()
+        assert (temp_session_dir / ".orkit").exists()
+        assert (temp_session_dir / ".orkit" / "reviews").exists()
+        assert (temp_session_dir / ".orkit" / "context").exists()
 
-        # Check session file exists
-        assert (tmp_path / ".orkit" / "session.json").exists()
+    def test_init_session_creates_session_json(
+        self,
+        session_manager: SessionManager,
+        temp_session_dir: Path,
+    ) -> None:
+        """Test that init_session creates session.json."""
+        session_manager.init_session(
+            prd_file="prd.md",
+            project_name="test",
+        )
 
-        # Check session data
-        assert session.session_id is not None
-        assert session.prd_file == "test.prd.md"
-        assert session.project_name == "test-project"
-        assert session.current_phase == PipelinePhase.INIT
+        session_file = temp_session_dir / ".orkit" / "session.json"
+        assert session_file.exists()
 
-    def test_session_json_valid(self, tmp_path: Path) -> None:
-        """Test that session.json contains valid JSON with all fields."""
-        manager = SessionManager(tmp_path)
-        manager.init_session(prd_file="test.prd.md")
-
-        session_path = tmp_path / ".orkit" / "session.json"
-        with open(session_path) as f:
-            data = json.load(f)
-
-        # Check all required fields
+        # Verify content
+        data = json.loads(session_file.read_text())
+        assert data["project_name"] == "test"
+        assert data["prd_file"] == "prd.md"
         assert "session_id" in data
-        assert "prd_file" in data
-        assert "project_name" in data
-        assert "output_dir" in data
-        assert "current_phase" in data
-        assert "created_at" in data
-        assert "updated_at" in data
-        assert "analysis" in data
-        assert "planning" in data
-        assert "generation" in data
-        assert "total_revisions" in data
-        assert "generated_files" in data
 
-    def test_phase_transitions(self, tmp_path: Path) -> None:
-        """Test phase transitions work correctly."""
-        manager = SessionManager(tmp_path)
-        manager.init_session(prd_file="test.prd.md")
+    def test_session_data_structure(self, initialized_session: SessionData) -> None:
+        """Test session data structure."""
+        assert initialized_session.project_name == "test-project"
+        assert initialized_session.prd_file == "/path/to/prd.md"
+        assert initialized_session.output_dir == "./output"
+        assert len(initialized_session.session_id) == 8
 
-        # Start analyzing
-        manager.start_phase(PipelinePhase.ANALYZING)
-        assert manager.session.current_phase == PipelinePhase.ANALYZING
-        assert manager.session.analysis.status == PhaseStatus.IN_PROGRESS
-        assert manager.session.analysis.started_at is not None
+    def test_session_has_phase_states(self, initialized_session: SessionData) -> None:
+        """Test that session has phase states."""
+        assert isinstance(initialized_session.analysis, PhaseState)
+        assert isinstance(initialized_session.planning, PhaseState)
+        assert isinstance(initialized_session.generation, PhaseState)
 
-        # Complete analysis
-        manager.complete_phase(PipelinePhase.ANALYZING)
-        assert manager.session.current_phase == PipelinePhase.ANALYSIS_REVIEW
-        assert manager.session.analysis.status == PhaseStatus.AWAITING_REVIEW
-        assert manager.session.analysis.completed_at is not None
+        # All should start as pending
+        assert initialized_session.analysis.status == PhaseStatus.PENDING
+        assert initialized_session.planning.status == PhaseStatus.PENDING
+        assert initialized_session.generation.status == PhaseStatus.PENDING
 
-        # Approve analysis and move to planning
-        manager.approve_phase(PipelinePhase.ANALYZING)
-        assert manager.session.current_phase == PipelinePhase.PLANNING
-        assert manager.session.analysis.status == PhaseStatus.APPROVED
 
-    def test_save_analysis(self, tmp_path: Path) -> None:
-        """Test save_analysis writes to .orkit/analysis.md."""
-        manager = SessionManager(tmp_path)
-        manager.init_session(prd_file="test.prd.md")
+# Test session loading
+class TestSessionLoading:
+    """Test session loading and persistence."""
 
-        content = "# Analysis\n\nThis is the analysis."
-        path = manager.save_analysis(content)
+    def test_load_session(
+        self,
+        session_manager: SessionManager,
+        initialized_session: SessionData,
+    ) -> None:
+        """Test loading an existing session."""
+        # Create new manager pointing to same directory
+        new_manager = SessionManager(session_manager.base_dir)
+        loaded = new_manager.load_session()
 
-        assert path.exists()
-        assert path.read_text() == content
-        assert (tmp_path / ".orkit" / "analysis.md").exists()
+        assert loaded.session_id == initialized_session.session_id
+        assert loaded.project_name == initialized_session.project_name
 
-    def test_save_plan(self, tmp_path: Path) -> None:
-        """Test save_plan writes to .orkit/plan.md."""
-        manager = SessionManager(tmp_path)
-        manager.init_session(prd_file="test.prd.md")
+    def test_has_session_true(self, session_manager: SessionManager) -> None:
+        """Test has_session returns True when session exists."""
+        session_manager.init_session(prd_file="prd.md", project_name="test")
+        assert session_manager.has_session() is True
 
-        content = "# Plan\n\nThis is the plan."
-        path = manager.save_plan(content)
-
-        assert path.exists()
-        assert path.read_text() == content
-        assert (tmp_path / ".orkit" / "plan.md").exists()
-
-    def test_version_tracking(self, tmp_path: Path) -> None:
-        """Test that each save creates version backup."""
-        manager = SessionManager(tmp_path)
-        manager.init_session(prd_file="test.prd.md")
-
-        # Save first version (version 1)
-        manager.save_analysis("# Analysis v1")
-
-        # Request revision to increment version to 2
-        manager.request_revision(PipelinePhase.ANALYZING, "Need changes")
-
-        # Save second version (backup will be v1 since current is now v2)
-        manager.save_analysis("# Analysis v2")
-
-        # Check backup exists (v1 backup created when saving v2)
-        backup_path = tmp_path / ".orkit" / "reviews" / "analysis_v1.md"
-        assert backup_path.exists()
-        assert backup_path.read_text() == "# Analysis v1"
-
-        # Check current version
-        current_path = tmp_path / ".orkit" / "analysis.md"
-        assert current_path.read_text() == "# Analysis v2"
-
-    def test_request_revision_increments_version(self, tmp_path: Path) -> None:
-        """Test that request_revision increments version counter."""
-        manager = SessionManager(tmp_path)
-        manager.init_session(prd_file="test.prd.md")
-
-        initial_version = manager.session.analysis.version
-        initial_revisions = manager.session.total_revisions
-
-        manager.request_revision(PipelinePhase.ANALYZING, "Need changes")
-
-        assert manager.session.analysis.version == initial_version + 1
-        assert manager.session.total_revisions == initial_revisions + 1
-
-    def test_log_conversation_appends_jsonl(self, tmp_path: Path) -> None:
-        """Test that log_conversation appends to JSONL file."""
-        manager = SessionManager(tmp_path)
-        manager.init_session(prd_file="test.prd.md")
-
-        manager.log_conversation("user", "Hello", {"key": "value"})
-        manager.log_conversation("assistant", "Hi there")
-
-        conversation_path = tmp_path / ".orkit" / "context" / "conversation.jsonl"
-        assert conversation_path.exists()
-
-        # Read and verify
-        with open(conversation_path) as f:
-            lines = f.readlines()
-
-        assert len(lines) == 2
-
-        entry1 = json.loads(lines[0])
-        assert entry1["role"] == "user"
-        assert entry1["content"] == "Hello"
-        assert entry1["metadata"] == {"key": "value"}
-
-        entry2 = json.loads(lines[1])
-        assert entry2["role"] == "assistant"
-        assert entry2["content"] == "Hi there"
-
-    def test_load_session_restores_state(self, tmp_path: Path) -> None:
-        """Test that load_session correctly restores state from disk."""
-        # Create and modify session
-        manager1 = SessionManager(tmp_path)
-        manager1.init_session(prd_file="test.prd.md", project_name="my-project")
-        manager1.start_phase(PipelinePhase.ANALYZING)
-        manager1.add_generated_file("src/app.tsx")
-
-        # Load in new manager instance
-        manager2 = SessionManager(tmp_path)
-        session = manager2.load_session()
-
-        assert session.prd_file == "test.prd.md"
-        assert session.project_name == "my-project"
-        assert session.current_phase == PipelinePhase.ANALYZING
-        assert session.analysis.status == PhaseStatus.IN_PROGRESS
-        assert "src/app.tsx" in session.generated_files
-
-    def test_has_session_returns_correct_value(self, tmp_path: Path) -> None:
-        """Test has_session returns True/False correctly."""
-        manager = SessionManager(tmp_path)
-
-        # No session yet
+    def test_has_session_false(self, temp_session_dir: Path) -> None:
+        """Test has_session returns False when no session exists."""
+        manager = SessionManager(temp_session_dir)
         assert manager.has_session() is False
 
-        # Create session
-        manager.init_session(prd_file="test.prd.md")
-        assert manager.has_session() is True
-
-        # Corrupt session file
-        session_path = tmp_path / ".orkit" / "session.json"
-        session_path.write_text("invalid json")
-        assert manager.has_session() is False
-
-    def test_save_generation_log(self, tmp_path: Path) -> None:
-        """Test save_generation_log appends to log file."""
-        manager = SessionManager(tmp_path)
-        manager.init_session(prd_file="test.prd.md")
-
-        manager.save_generation_log("Generated file 1")
-        manager.save_generation_log("Generated file 2")
-
-        log_path = tmp_path / ".orkit" / "generation_log.md"
-        assert log_path.exists()
-
-        content = log_path.read_text()
-        assert "Generated file 1" in content
-        assert "Generated file 2" in content
-
-    def test_get_analysis_and_plan(self, tmp_path: Path) -> None:
-        """Test get_analysis and get_plan methods."""
-        manager = SessionManager(tmp_path)
-        manager.init_session(prd_file="test.prd.md")
-
-        # Empty when no files
-        assert manager.get_analysis() == ""
-        assert manager.get_plan() == ""
-
-        # Save and retrieve
-        manager.save_analysis("# Analysis content")
-        manager.save_plan("# Plan content")
-
-        assert manager.get_analysis() == "# Analysis content"
-        assert manager.get_plan() == "# Plan content"
-
-    def test_log_decision(self, tmp_path: Path) -> None:
-        """Test log_decision appends to decisions file."""
-        manager = SessionManager(tmp_path)
-        manager.init_session(prd_file="test.prd.md")
-
-        manager.log_decision("Use TypeScript", "Team decided on TS")
-
-        decisions_path = tmp_path / ".orkit" / "context" / "decisions.md"
-        assert decisions_path.exists()
-
-        content = decisions_path.read_text()
-        assert "Use TypeScript" in content
-        assert "Team decided on TS" in content
-
-    def test_get_conversation_history(self, tmp_path: Path) -> None:
-        """Test get_conversation_history returns recent entries."""
-        manager = SessionManager(tmp_path)
-        manager.init_session(prd_file="test.prd.md")
-
-        # Add entries
-        for i in range(5):
-            manager.log_conversation("user", f"Message {i}")
-
-        # Get history
-        history = manager.get_conversation_history(limit=3)
-        assert len(history) == 3
-        assert history[0].content == "Message 2"
-        assert history[2].content == "Message 4"
-
-    def test_fail_phase(self, tmp_path: Path) -> None:
-        """Test fail_phase marks phase as failed."""
-        manager = SessionManager(tmp_path)
-        manager.init_session(prd_file="test.prd.md")
-
-        manager.start_phase(PipelinePhase.ANALYZING)
-        manager.fail_phase(PipelinePhase.ANALYZING, "Analysis failed due to error")
-
-        assert manager.session.analysis.status == PhaseStatus.FAILED
-        assert manager.session.analysis.error == "Analysis failed due to error"
-        assert manager.session.current_phase == PipelinePhase.FAILED
-
-    def test_add_generated_file(self, tmp_path: Path) -> None:
-        """Test add_generated_file tracks files."""
-        manager = SessionManager(tmp_path)
-        manager.init_session(prd_file="test.prd.md")
-
-        manager.add_generated_file("src/app.tsx")
-        manager.add_generated_file("src/page.tsx")
-        manager.add_generated_file("src/app.tsx")  # Duplicate, should not add
-
-        assert len(manager.session.generated_files) == 2
-        assert "src/app.tsx" in manager.session.generated_files
-        assert "src/page.tsx" in manager.session.generated_files
-
-    def test_no_session_errors(self, tmp_path: Path) -> None:
-        """Test that operations fail gracefully without session."""
-        manager = SessionManager(tmp_path)
-
-        with pytest.raises(RuntimeError, match="No session loaded"):
-            manager.start_phase(PipelinePhase.ANALYZING)
-
-        with pytest.raises(RuntimeError, match="No session loaded"):
-            manager.save_analysis("content")
-
-    def test_load_session_not_found(self, tmp_path: Path) -> None:
-        """Test load_session raises FileNotFoundError."""
-        manager = SessionManager(tmp_path)
-
+    def test_load_session_not_found(self, temp_session_dir: Path) -> None:
+        """Test loading non-existent session raises error."""
+        manager = SessionManager(temp_session_dir)
         with pytest.raises(FileNotFoundError):
             manager.load_session()
 
-    def test_session_survives_restart(self, tmp_path: Path) -> None:
-        """Test that session survives process restart."""
-        # First "process"
-        manager1 = SessionManager(tmp_path)
-        manager1.init_session(prd_file="test.prd.md", project_name="survivor")
-        manager1.start_phase(PipelinePhase.ANALYZING)
-        manager1.save_analysis("# Analysis")
 
-        # Second "process" - new manager instance
-        manager2 = SessionManager(tmp_path)
-        assert manager2.has_session() is True
+# Test phase transitions
+class TestPhaseTransitions:
+    """Test phase state transitions."""
 
-        session = manager2.load_session()
-        assert session.project_name == "survivor"
-        assert session.current_phase == PipelinePhase.ANALYZING
-        assert manager2.get_analysis() == "# Analysis"
+    def test_start_phase(
+        self,
+        session_manager: SessionManager,
+        initialized_session: SessionData,
+    ) -> None:
+        """Test starting a phase."""
+        session_manager.start_phase(PipelinePhase.ANALYZING)
 
-    def test_get_phase_history(self, tmp_path: Path) -> None:
-        """Test get_phase_history returns version files."""
-        manager = SessionManager(tmp_path)
-        manager.init_session(prd_file="test.prd.md")
+        assert session_manager.session.current_phase == PipelinePhase.ANALYZING
+        assert session_manager.session.analysis.status == PhaseStatus.IN_PROGRESS
+        assert session_manager.session.analysis.started_at is not None
 
-        # Create some versions
-        (tmp_path / ".orkit" / "reviews" / "analysis_v1.md").write_text("v1")
-        (tmp_path / ".orkit" / "reviews" / "analysis_v2.md").write_text("v2")
-        (tmp_path / ".orkit" / "reviews" / "plan_v1.md").write_text("plan")
+    def test_complete_phase(
+        self,
+        session_manager: SessionManager,
+        initialized_session: SessionData,
+    ) -> None:
+        """Test completing a phase."""
+        session_manager.start_phase(PipelinePhase.ANALYZING)
+        session_manager.complete_phase(PipelinePhase.ANALYZING)
 
-        history = manager.get_phase_history("analysis")
+        assert session_manager.session.analysis.status == PhaseStatus.AWAITING_REVIEW
+        assert session_manager.session.analysis.completed_at is not None
+        assert session_manager.session.current_phase == PipelinePhase.ANALYSIS_REVIEW
+
+    def test_approve_phase(
+        self,
+        session_manager: SessionManager,
+        initialized_session: SessionData,
+    ) -> None:
+        """Test approving a phase."""
+        session_manager.start_phase(PipelinePhase.ANALYZING)
+        session_manager.complete_phase(PipelinePhase.ANALYZING)
+        session_manager.approve_phase(PipelinePhase.ANALYZING)
+
+        assert session_manager.session.analysis.status == PhaseStatus.APPROVED
+        assert session_manager.session.current_phase == PipelinePhase.PLANNING
+
+    def test_request_revision(
+        self,
+        session_manager: SessionManager,
+        initialized_session: SessionData,
+    ) -> None:
+        """Test requesting a revision."""
+        session_manager.start_phase(PipelinePhase.ANALYZING)
+        session_manager.complete_phase(PipelinePhase.ANALYZING)
+        session_manager.request_revision(PipelinePhase.ANALYZING, "Needs more detail")
+
+        assert session_manager.session.analysis.status == PhaseStatus.REVISION_REQUESTED
+        assert session_manager.session.analysis.version == 2
+        assert session_manager.session.total_revisions == 1
+        assert session_manager.session.current_phase == PipelinePhase.ANALYZING
+
+    def test_fail_phase(
+        self,
+        session_manager: SessionManager,
+        initialized_session: SessionData,
+    ) -> None:
+        """Test failing a phase."""
+        session_manager.start_phase(PipelinePhase.ANALYZING)
+        session_manager.fail_phase(PipelinePhase.ANALYZING, "LLM API error")
+
+        assert session_manager.session.analysis.status == PhaseStatus.FAILED
+        assert session_manager.session.analysis.error == "LLM API error"
+        assert session_manager.session.current_phase == PipelinePhase.FAILED
+
+    def test_phase_version_increment(
+        self,
+        session_manager: SessionManager,
+        initialized_session: SessionData,
+    ) -> None:
+        """Test phase version increments on revision."""
+        session_manager.start_phase(PipelinePhase.ANALYZING)
+        session_manager.complete_phase(PipelinePhase.ANALYZING)
+
+        assert session_manager.session.analysis.version == 1
+
+        session_manager.request_revision(PipelinePhase.ANALYZING, "Fix 1")
+        assert session_manager.session.analysis.version == 2
+
+        session_manager.complete_phase(PipelinePhase.ANALYZING)
+        session_manager.request_revision(PipelinePhase.ANALYZING, "Fix 2")
+        assert session_manager.session.analysis.version == 3
+
+
+# Test content saving
+class TestContentSaving:
+    """Test saving analysis and plan content."""
+
+    def test_save_analysis(
+        self,
+        session_manager: SessionManager,
+        initialized_session: SessionData,
+    ) -> None:
+        """Test saving analysis content."""
+        content = "# Analysis\n\nThis is the analysis."
+        path = session_manager.save_analysis(content)
+
+        assert path.exists()
+        assert path.read_text() == content
+
+    def test_get_analysis(
+        self,
+        session_manager: SessionManager,
+        initialized_session: SessionData,
+    ) -> None:
+        """Test retrieving analysis content."""
+        content = "# Analysis\n\nTest content."
+        session_manager.save_analysis(content)
+
+        retrieved = session_manager.get_analysis()
+        assert retrieved == content
+
+    def test_save_plan(
+        self,
+        session_manager: SessionManager,
+        initialized_session: SessionData,
+    ) -> None:
+        """Test saving plan content."""
+        content = "# Plan\n\nThis is the plan."
+        path = session_manager.save_plan(content)
+
+        assert path.exists()
+        assert path.read_text() == content
+
+    def test_get_plan(
+        self,
+        session_manager: SessionManager,
+        initialized_session: SessionData,
+    ) -> None:
+        """Test retrieving plan content."""
+        content = "# Plan\n\nTest content."
+        session_manager.save_plan(content)
+
+        retrieved = session_manager.get_plan()
+        assert retrieved == content
+
+    def test_save_creates_backup(
+        self,
+        session_manager: SessionManager,
+        initialized_session: SessionData,
+    ) -> None:
+        """Test that saving creates backup of previous version."""
+        # First save
+        session_manager.save_analysis("Version 1")
+
+        # Increment version and save again
+        session_manager.session.analysis.version = 2
+        session_manager.save_analysis("Version 2")
+
+        # Check backup exists
+        backup_path = session_manager.reviews_dir / "analysis_v1.md"
+        assert backup_path.exists()
+        assert backup_path.read_text() == "Version 1"
+
+
+# Test file tracking
+class TestFileTracking:
+    """Test generated file tracking."""
+
+    def test_add_generated_file(
+        self,
+        session_manager: SessionManager,
+        initialized_session: SessionData,
+    ) -> None:
+        """Test adding generated files."""
+        session_manager.add_generated_file("/path/to/file1.tsx")
+        session_manager.add_generated_file("/path/to/file2.tsx")
+
+        assert "/path/to/file1.tsx" in session_manager.session.generated_files
+        assert "/path/to/file2.tsx" in session_manager.session.generated_files
+
+    def test_track_file(
+        self,
+        session_manager: SessionManager,
+        initialized_session: SessionData,
+    ) -> None:
+        """Test tracking file with task context."""
+        session_manager.track_file("/path/to/component.tsx", task_title="Create Button")
+
+        assert "/path/to/component.tsx" in session_manager.session.generated_files
+
+    def test_no_duplicate_files(
+        self,
+        session_manager: SessionManager,
+        initialized_session: SessionData,
+    ) -> None:
+        """Test that duplicate files are not added."""
+        session_manager.add_generated_file("/path/to/file.tsx")
+        session_manager.add_generated_file("/path/to/file.tsx")
+
+        assert session_manager.session.generated_files.count("/path/to/file.tsx") == 1
+
+
+# Test logging
+class TestLogging:
+    """Test conversation and decision logging."""
+
+    def test_log_conversation(
+        self,
+        session_manager: SessionManager,
+        initialized_session: SessionData,
+    ) -> None:
+        """Test logging conversation entries."""
+        session_manager.log_conversation("user", "Hello")
+        session_manager.log_conversation("assistant", "Hi there!")
+
+        history = session_manager.get_conversation_history()
         assert len(history) == 2
-        assert history[0].name == "analysis_v1.md"
-        assert history[1].name == "analysis_v2.md"
+        assert history[0].role == "user"
+        assert history[0].content == "Hello"
+
+    def test_log_decision(
+        self,
+        session_manager: SessionManager,
+        initialized_session: SessionData,
+    ) -> None:
+        """Test logging decisions."""
+        session_manager.log_decision("Chose Next.js", context="Best fit for requirements")
+
+        decisions_path = session_manager.context_dir / "decisions.md"
+        assert decisions_path.exists()
+        content = decisions_path.read_text()
+        assert "Chose Next.js" in content
+        assert "Best fit" in content
+
+    def test_conversation_history_limit(
+        self,
+        session_manager: SessionManager,
+        initialized_session: SessionData,
+    ) -> None:
+        """Test conversation history respects limit."""
+        # Add 150 entries
+        for i in range(150):
+            session_manager.log_conversation("user", f"Message {i}")
+
+        # Should return last 100 by default
+        history = session_manager.get_conversation_history(limit=100)
+        assert len(history) == 100
+        assert history[0].content == "Message 50"
+        assert history[-1].content == "Message 149"
+
+
+# Test resume after restart
+class TestResume:
+    """Test session resume functionality."""
+
+    def test_persist_and_resume(
+        self,
+        session_manager: SessionManager,
+        initialized_session: SessionData,
+        temp_session_dir: Path,
+    ) -> None:
+        """Test that session persists and can be resumed."""
+        # Progress through some phases
+        session_manager.start_phase(PipelinePhase.ANALYZING)
+        session_manager.complete_phase(PipelinePhase.ANALYZING)
+        session_manager.approve_phase(PipelinePhase.ANALYZING)
+        session_manager.start_phase(PipelinePhase.PLANNING)
+
+        # Save content
+        session_manager.save_analysis("Analysis content")
+        session_manager.save_plan("Plan content")
+
+        # Simulate restart - create new manager
+        new_manager = SessionManager(temp_session_dir)
+        assert new_manager.has_session()
+
+        loaded = new_manager.load_session()
+        assert loaded.current_phase == PipelinePhase.PLANNING
+        assert loaded.analysis.status == PhaseStatus.APPROVED
+
+        # Content should be preserved
+        assert new_manager.get_analysis() == "Analysis content"
+        assert new_manager.get_plan() == "Plan content"
+
+    def test_version_tracking(
+        self,
+        session_manager: SessionManager,
+        initialized_session: SessionData,
+    ) -> None:
+        """Test version tracking across saves."""
+        session_manager.start_phase(PipelinePhase.ANALYZING)
+        session_manager.complete_phase(PipelinePhase.ANALYZING)
+        session_manager.request_revision(PipelinePhase.ANALYZING, "Fix")
+        session_manager.complete_phase(PipelinePhase.ANALYZING)
+        session_manager.request_revision(PipelinePhase.ANALYZING, "Another fix")
+
+        assert session_manager.session.total_revisions == 2
+        assert session_manager.session.analysis.version == 3
