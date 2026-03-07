@@ -1,0 +1,111 @@
+## Labels: `meta`, `tracking`, `documentation`
+
+---
+
+## 🎯 Vision
+
+Đơn giản hóa Orkit Crew thành **PRD-to-Product Pipeline**:
+- Input: 1 PRD file (markdown + YAML frontmatter)
+- Process: 3-phase pipeline (Analyze → Plan → Generate) với iterative human review
+- Output: Next.js project files on disk
+
+## 📋 Brainstorm Context
+
+### Decisions Made
+
+| Decision | Value |
+|----------|-------|
+| LLM | GPT-5.4 via Planno Gateway |
+| Stack MVP | Next.js frontend only |
+| Modes | Greenfield (new project) + Extend (add features) |
+| PRD format | Markdown + YAML frontmatter |
+| Scope control | User sets scope: mvp or full in frontmatter |
+| Complexity | User hint or auto — agent assesses |
+| Review mode | Step-by-step → Full markdown export → Iterative loop |
+| State | Markdown-based (.orkit/ directory) — no Redis/Qdrant needed |
+| Future | Web UI, RAG memory, more tech stacks |
+
+### Architecture: 3-Phase Iterative Pipeline
+
+```
+PRD File (markdown + frontmatter)
+         │
+    ┌────▼─────────────┐
+    │ Phase 1: Analyze  │ ←→ Human Review Loop
+    │ (PRD Analyst)     │
+    └────┬─────────────┘
+         │ analysis.md
+    ┌────▼─────────────┐
+    │ Phase 2: Plan     │ ←→ Human Review Loop  
+    │ (Task Architect)  │
+    └────┬─────────────┘
+         │ plan.md
+    ┌────▼─────────────┐
+    │ Phase 3: Generate │ ←→ Human Review Loop
+    │ (Code Generator)  │
+    └────┬─────────────┘
+         │
+    Project Files on Disk
+```
+
+### What We Keep vs Cut from Current Codebase
+
+| Keep (refactor) | Cut/Ignore |
+|-----------------|-----------|
+| BaseCrew pattern | Council Router → fixed pipeline |
+| PlanningCrew → PRD Analyst + Task Architect | ChatCrew concept |
+| CodingCrew → Code Generator | Gateway HTTP server |
+| plano_client.py | Qdrant memory |
+| config.py (Pydantic settings) | Redis memory |
+| MarkdownMemory → Session state | State machine → session.json |
+| CLI (typer) | Unused tools/ module |
+| Docker Compose (simplified) | Duplicate dirs outside orkit_crew/ |
+
+---
+
+## 📊 Implementation Tracker
+
+| # | Issue | Status | Depends On |
+|---|-------|--------|------------|
+| 1 | [SETUP] Cleanup Codebase and Restructure | ⬜ TODO | — |
+| 2 | [CORE] PRD Template + Frontmatter Parser | ⬜ TODO | Issue 1 |
+| 3 | [CORE] Session Manager (Markdown State) | ⬜ TODO | Issue 1 |
+| 4 | [AGENT] Phase 1 — PRD Analyst | ⬜ TODO | Issue 2, 3 |
+| 5 | [AGENT] Phase 2 — Task Architect | ⬜ TODO | Issue 4 |
+| 6 | [AGENT] Phase 3 — Code Generator (Next.js) | ⬜ TODO | Issue 5 |
+| 7 | [CLI] Pipeline Orchestrator + Commands | ⬜ TODO | Issue 4, 5, 6 |
+| 8 | [CONFIG] Stack Config + Planno Client Cleanup | ⬜ TODO | Issue 1 |
+| 9 | [TEST] Test Suite + Sample PRDs | ⬜ TODO | Issue 7 |
+
+### Execution Order
+
+```
+Issue 1 (Setup)
+    ├──→ Issue 2 (PRD Parser)     ─┐
+    ├──→ Issue 3 (Session Manager) ─┼──→ Issue 4 (Analyst Agent)
+    └──→ Issue 8 (Config)         ─┘        │
+                                         Issue 5 (Architect Agent)
+                                             │
+                                         Issue 6 (Code Gen Agent)
+                                             │
+                                         Issue 7 (CLI Orchestrator)
+                                             │
+                                         Issue 9 (Tests)
+```
+
+### Estimated Timeline
+
+| Week | Issues | Milestone |
+|------|--------|-----------|
+| Week 1 | 1, 2, 3, 8 | Foundation ready |
+| Week 2 | 4, 5 | Analysis + Planning agents work |
+| Week 3 | 6, 7 | Full pipeline works end-to-end |
+| Week 4 | 9 | Tested, stable MVP |
+
+---
+
+## References
+
+- Architecture Doc: docs/ARCHITECTURE.md
+- Audit Report: docs/AUDIT_REPORT.md
+- Brainstorm Session: 2026-03-07
