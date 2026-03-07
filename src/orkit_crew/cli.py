@@ -1,370 +1,396 @@
 #!/usr/bin/env python3
-"""CLI client for Orkit Crew Gateway Server.
+"""CLI for Orkit Crew - PRD-to-Product Pipeline.
 
-This CLI communicates with the Gateway API instead of being a direct entry point.
+This CLI provides commands to run the PRD pipeline, resume sessions,
+check status, and generate templates.
 """
 
-import argparse
-import os
+from __future__ import annotations
+
+import asyncio
 import sys
 from pathlib import Path
 from typing import Any
 
+import typer
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.syntax import Syntax
+
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import httpx
-
-# Default Gateway URL
-DEFAULT_GATEWAY_URL = "http://localhost:8000"
-
-# Color codes for terminal output
-COLORS = {
-    "reset": "\033[0m",
-    "bold": "\033[1m",
-    "red": "\033[91m",
-    "green": "\033[92m",
-    "yellow": "\033[93m",
-    "blue": "\033[94m",
-    "cyan": "\033[96m",
-}
+from orkit_crew.core.prd_parser import PRDParser
+from orkit_crew.core.session import SessionManager
+from orkit_crew.pipeline.orchestrator import PipelineOrchestrator
 
 
-def colorize(text: str, color: str) -> str:
-    """Apply color to text if terminal supports it."""
-    if sys.stdout.isatty():
-        return f"{COLORS.get(color, '')}{text}{COLORS['reset']}"
-    return text
+app = typer.Typer(
+    name="orkit",
+    help="Orkit Crew - PRD-to-Product Pipeline",
+    rich_markup_mode="rich",
+)
+console = Console()
 
 
-def get_gateway_url() -> str:
-    """Get Gateway URL from environment or use default."""
-    return os.environ.get("ORKIT_GATEWAY_URL", DEFAULT_GATEWAY_URL)
+PRD_TEMPLATE = '''---
+project_name: my-awesome-app
+version: 1.0.0
+mode: greenfield
+scope: mvp
+complexity: auto
+stack:
+  framework: nextjs
+  language: typescript
+  styling: tailwind
+  ui_library: shadcn
+  package_manager: pnpm
+nextjs:
+  router: app
+  src_dir: true
+output_dir: ./output
+---
+
+# 1. Overview
+
+Brief description of your project.
+
+# 2. Goals
+
+- Primary goal
+- Secondary goal
+
+# 3. Features
+
+## Feature 1: Core Feature
+**Priority:** P0
+
+### User Story
+As a user, I want to...
+
+### Description
+Detailed description of the feature.
+
+### Components
+- [ ] Component A
+- [ ] Component B
+
+### Acceptance Criteria
+- [ ] Criterion 1
+- [ ] Criterion 2
+
+## Feature 2: Secondary Feature
+**Priority:** P1
+
+### User Story
+As a user, I want to...
+
+### Description
+Description of secondary feature.
+
+# 4. Page Structure
+
+| Route | Page Name | Description | Auth Required |
+|-------|-----------|-------------|---------------|
+| / | Home | Landing page | No |
+| /dashboard | Dashboard | Main dashboard | Yes |
+| /login | Login | Authentication | No |
+
+# 5. API Requirements
+
+Describe API endpoints needed.
+
+# 6. Database Schema
+
+Describe data models.
+
+# 7. Authentication
+
+Describe auth requirements.
+
+# 8. UI/UX Guidelines
+
+Design system and styling guidelines.
+
+# 9. Performance
+
+Performance requirements.
+
+# 10. Security
+
+Security considerations.
+
+# 11. Deployment
+
+Deployment requirements.
+
+# 12. Timeline
+
+Project timeline and milestones.
+'''
 
 
-def handle_api_error(response: httpx.Response) -> None:
-    """Handle API error responses."""
+@app.command()
+def prd(
+    prd_file: str = typer.Argument(..., help="Path to PRD markdown file"),
+    output: str = typer.Option(None, "--output", "-o", help="Output directory for generated files"),
+    model: str = typer.Option("gpt-4", "--model", "-m", help="LLM model to use"),
+    temperature: float = typer.Option(0.7, "--temperature", "-t", help="LLM temperature"),
+) -> None:
+    """Start PRD-to-Product pipeline from a PRD file."""
+    prd_path = Path(prd_file)
+
+    if not prd_path.exists():
+        console.print(f"[red]Error: PRD file not found: {prd_file}[/red]")
+        raise typer.Exit(1)
+
+    console.print(Panel.fit(f"🚀 Orkit Crew Pipeline", style="blue"))
+    console.print(f"PRD: [cyan]{prd_path.absolute()}[/cyan]")
+    if output:
+        console.print(f"Output: [cyan]{output}[/cyan]")
+
+    # Validate PRD
     try:
-        data = response.json()
-        detail = data.get("detail", "Unknown error")
-    except Exception:
-        detail = response.text or "Unknown error"
+        parser = PRDParser()
+        doc = parser.parse_file(prd_path)
 
-    error_msg = f"API Error ({response.status_code}): {detail}"
-    print(colorize(error_msg, "red"), file=sys.stderr)
+        if parser.warnings:
+            console.print("[yellow]Warnings:[/yellow]")
+            for warning in parser.warnings:
+                console.print(f"  • {warning}")
 
+        console.print(f"\n[green]✓ Valid PRD:[/green] [bold]{doc.metadata.project_name}[/bold]")
 
-def handle_connection_error(error: Exception) -> None:
-    """Handle connection errors to Gateway."""
-    url = get_gateway_url()
-    error_msg = f"""
-{colorize('❌ Cannot connect to Gateway', 'red')}
+    except Exception as e:
+        console.print(f"[red]Error parsing PRD: {e}[/red]")
+        raise typer.Exit(1)
 
-Gateway URL: {url}
-
-Possible solutions:
-1. Start the Gateway server: {colorize('orkit serve', 'cyan')}
-2. Check if Gateway is running on the correct host/port
-3. Set ORKIT_GATEWAY_URL environment variable if Gateway is on a different URL
-
-Example:
-    export ORKIT_GATEWAY_URL=http://localhost:8000
-"""
-    print(error_msg, file=sys.stderr)
-
-
-def format_task(task: dict[str, Any]) -> str:
-    """Format a task for display."""
-    status_colors = {
-        "pending": "yellow",
-        "running": "blue",
-        "completed": "green",
-        "failed": "red",
-        "cancelled": "yellow",
+    # Run pipeline
+    llm_config = {
+        "model": model,
+        "temperature": temperature,
     }
 
-    status = task.get("status", "unknown")
-    status_color = status_colors.get(status, "reset")
+    orchestrator = PipelineOrchestrator(
+        prd_path=str(prd_path),
+        output_dir=output,
+        llm_config=llm_config,
+    )
 
-    lines = [
-        f"{colorize('Task ID:', 'bold')} {task.get('id')}",
-        f"{colorize('Status:', 'bold')} {colorize(status.upper(), status_color)}",
-        f"{colorize('Crew:', 'bold')} {task.get('crew_type')}",
-        f"{colorize('Description:', 'bold')} {task.get('description')}",
-    ]
-
-    if task.get("result"):
-        lines.append(f"{colorize('Result:', 'bold')} {task.get('result')}")
-
-    if task.get("error"):
-        lines.append(f"{colorize('Error:', 'red')} {task.get('error')}")
-
-    return "\n".join(lines)
+    try:
+        success = asyncio.run(orchestrator.run())
+        if not success:
+            raise typer.Exit(1)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Pipeline interrupted by user[/yellow]")
+        raise typer.Exit(130)
 
 
-def cmd_task(args: argparse.Namespace) -> int:
-    """Submit a new task."""
-    url = get_gateway_url()
+@app.command()
+def resume(
+    directory: str = typer.Argument(".", help="Directory with existing session"),
+    model: str = typer.Option("gpt-4", "--model", "-m", help="LLM model to use"),
+    temperature: float = typer.Option(0.7, "--temperature", "-t", help="LLM temperature"),
+) -> None:
+    """Resume an existing pipeline session."""
+    dir_path = Path(directory)
 
-    payload = {
-        "crew_type": args.crew,
-        "description": args.description,
-        "metadata": {},
+    if not dir_path.exists():
+        console.print(f"[red]Error: Directory not found: {directory}[/red]")
+        raise typer.Exit(1)
+
+    session_manager = SessionManager(dir_path)
+
+    if not session_manager.has_session():
+        console.print(f"[red]Error: No session found in {directory}[/red]")
+        console.print("Run [cyan]orkit prd <file>[/cyan] to start a new pipeline")
+        raise typer.Exit(1)
+
+    # Load session to get PRD path
+    session = session_manager.load_session()
+
+    llm_config = {
+        "model": model,
+        "temperature": temperature,
     }
 
-    try:
-        with httpx.Client() as client:
-            response = client.post(f"{url}/api/v1/tasks", json=payload)
-
-        if response.status_code == 201:
-            data = response.json()
-            print(colorize("✅ Task submitted successfully!", "green"))
-            print()
-            print(format_task(data))
-            return 0
-        else:
-            handle_api_error(response)
-            return 1
-
-    except httpx.ConnectError as e:
-        handle_connection_error(e)
-        return 1
-    except Exception as e:
-        print(colorize(f"Error: {e}", "red"), file=sys.stderr)
-        return 1
-
-
-def cmd_status(args: argparse.Namespace) -> int:
-    """Get task status."""
-    url = get_gateway_url()
-    task_id = args.task_id
+    orchestrator = PipelineOrchestrator(
+        prd_path=session.prd_file,
+        output_dir=session.output_dir,
+        llm_config=llm_config,
+    )
 
     try:
-        with httpx.Client() as client:
-            response = client.get(f"{url}/api/v1/tasks/{task_id}")
-
-        if response.status_code == 200:
-            data = response.json()
-            print(format_task(data))
-            return 0
-        elif response.status_code == 404:
-            print(colorize(f"❌ Task not found: {task_id}", "red"), file=sys.stderr)
-            return 1
-        else:
-            handle_api_error(response)
-            return 1
-
-    except httpx.ConnectError as e:
-        handle_connection_error(e)
-        return 1
-    except Exception as e:
-        print(colorize(f"Error: {e}", "red"), file=sys.stderr)
-        return 1
+        success = asyncio.run(orchestrator.resume())
+        if not success:
+            raise typer.Exit(1)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Pipeline interrupted by user[/yellow]")
+        raise typer.Exit(130)
 
 
-def cmd_cancel(args: argparse.Namespace) -> int:
-    """Cancel a task."""
-    url = get_gateway_url()
-    task_id = args.task_id
+@app.command()
+def status(
+    directory: str = typer.Argument(".", help="Directory to check"),
+) -> None:
+    """Show current pipeline status."""
+    dir_path = Path(directory)
+
+    if not dir_path.exists():
+        console.print(f"[red]Error: Directory not found: {directory}[/red]")
+        raise typer.Exit(1)
+
+    session_manager = SessionManager(dir_path)
+
+    if not session_manager.has_session():
+        console.print(f"[yellow]No active session in {directory}[/yellow]")
+        console.print("Run [cyan]orkit prd <file>[/cyan] to start a pipeline")
+        return
+
+    # Load and display status
+    session = session_manager.load_session()
+
+    table = Table(title=f"Pipeline Status: {session.project_name}")
+    table.add_column("Property", style="cyan")
+    table.add_column("Value", style="green")
+
+    table.add_row("Session ID", session.session_id)
+    table.add_row("Current Phase", session.current_phase.value)
+    table.add_row("Analysis", session.analysis.status.value)
+    table.add_row("Planning", session.planning.status.value)
+    table.add_row("Generation", session.generation.status.value)
+    table.add_row("Total Revisions", str(session.total_revisions))
+    table.add_row("Generated Files", str(len(session.generated_files)))
+    table.add_row("Created", session.created_at.strftime("%Y-%m-%d %H:%M"))
+    table.add_row("Updated", session.updated_at.strftime("%Y-%m-%d %H:%M"))
+
+    console.print(table)
+
+    # Show recent files if any
+    if session.generated_files:
+        console.print("\n[bold]Recent Generated Files:[/bold]")
+        for f in session.generated_files[-5:]:
+            console.print(f"  • {f}")
+
+
+@app.command()
+def template(
+    output: str = typer.Option("./prd.md", "--output", "-o", help="Output file path"),
+) -> None:
+    """Generate a blank PRD template file."""
+    output_path = Path(output)
+
+    if output_path.exists():
+        if not typer.confirm(f"{output} already exists. Overwrite?"):
+            console.print("Cancelled")
+            raise typer.Exit(0)
+
+    output_path.write_text(PRD_TEMPLATE, encoding="utf-8")
+    console.print(f"[green]✓ Created PRD template:[/green] [cyan]{output_path.absolute()}[/cyan]")
+    console.print("\n[dim]Edit the template with your project details, then run:[/dim]")
+    console.print(f"  [cyan]orkit prd {output}[/cyan]")
+
+
+@app.command()
+def validate(
+    prd_file: str = typer.Argument(..., help="Path to PRD file to validate"),
+) -> None:
+    """Validate a PRD file without running the pipeline."""
+    prd_path = Path(prd_file)
+
+    if not prd_path.exists():
+        console.print(f"[red]Error: PRD file not found: {prd_file}[/red]")
+        raise typer.Exit(1)
+
+    console.print(Panel.fit(f"🔍 Validating PRD", style="blue"))
 
     try:
-        with httpx.Client() as client:
-            response = client.post(f"{url}/api/v1/tasks/{task_id}/cancel")
+        parser = PRDParser()
+        doc = parser.parse_file(prd_path)
 
-        if response.status_code == 200:
-            data = response.json()
-            print(colorize("✅ Task cancelled successfully!", "green"))
-            print()
-            print(format_task(data))
-            return 0
-        elif response.status_code == 404:
-            print(colorize(f"❌ Task not found: {task_id}", "red"), file=sys.stderr)
-            return 1
+        # Show metadata
+        console.print("\n[bold]Metadata:[/bold]")
+        console.print(f"  Project: {doc.metadata.project_name}")
+        console.print(f"  Version: {doc.metadata.version}")
+        console.print(f"  Mode: {doc.metadata.mode.value}")
+        console.print(f"  Scope: {doc.metadata.scope.value}")
+        console.print(f"  Complexity: {doc.metadata.complexity.value}")
+
+        # Show stack
+        console.print("\n[bold]Stack:[/bold]")
+        console.print(f"  Framework: {doc.metadata.stack.framework}")
+        console.print(f"  Language: {doc.metadata.stack.language}")
+        console.print(f"  Styling: {doc.metadata.stack.styling}")
+        console.print(f"  UI Library: {doc.metadata.stack.ui_library}")
+
+        # Show features
+        console.print(f"\n[bold]Features ({len(doc.content.features)}):[/bold]")
+        for feature in doc.content.features[:10]:
+            console.print(f"  • {feature.name} ({feature.priority.value})")
+        if len(doc.content.features) > 10:
+            console.print(f"  ... and {len(doc.content.features) - 10} more")
+
+        # Show pages
+        console.print(f"\n[bold]Pages ({len(doc.content.pages)}):[/bold]")
+        for page in doc.content.pages[:10]:
+            auth = " 🔒" if page.auth_required else ""
+            console.print(f"  • {page.route} - {page.name}{auth}")
+        if len(doc.content.pages) > 10:
+            console.print(f"  ... and {len(doc.content.pages) - 10} more")
+
+        # Show warnings
+        if parser.warnings:
+            console.print("\n[yellow]Warnings:[/yellow]")
+            for warning in parser.warnings:
+                console.print(f"  ⚠ {warning}")
         else:
-            handle_api_error(response)
-            return 1
+            console.print("\n[green]✓ No warnings[/green]")
 
-    except httpx.ConnectError as e:
-        handle_connection_error(e)
-        return 1
+        console.print("\n[green]✓ PRD is valid![/green]")
+
     except Exception as e:
-        print(colorize(f"Error: {e}", "red"), file=sys.stderr)
-        return 1
+        console.print(f"\n[red]✗ Validation failed: {e}[/red]")
+        raise typer.Exit(1)
 
 
-def cmd_crews(args: argparse.Namespace) -> int:
-    """List available crews."""
-    url = get_gateway_url()
-
-    try:
-        with httpx.Client() as client:
-            response = client.get(f"{url}/api/v1/crews")
-
-        if response.status_code == 200:
-            data = response.json()
-            crews = data.get("crews", {})
-
-            print(colorize("Available Crews:", "bold"))
-            print()
-
-            for crew_name, description in crews.items():
-                print(f"  {colorize('•', 'cyan')} {colorize(crew_name, 'bold')}: {description}")
-
-            return 0
-        else:
-            handle_api_error(response)
-            return 1
-
-    except httpx.ConnectError as e:
-        handle_connection_error(e)
-        return 1
-    except Exception as e:
-        print(colorize(f"Error: {e}", "red"), file=sys.stderr)
-        return 1
-
-
-def cmd_serve(args: argparse.Namespace) -> int:
-    """Start the Gateway server."""
+@app.command()
+def serve(
+    host: str = typer.Option("127.0.0.1", "--host", "-h", help="Host to bind to"),
+    port: int = typer.Option(8000, "--port", "-p", help="Port to bind to"),
+    reload: bool = typer.Option(False, "--reload", help="Enable auto-reload"),
+    log_level: str = typer.Option("info", "--log-level", help="Logging level"),
+) -> None:
+    """Start the Gateway server (legacy mode)."""
     import subprocess
 
-    # Get the path to the gateway CLI
-    import pathlib
-
-    gateway_cli = pathlib.Path(__file__).parent.parent / "gateway" / "cli.py"
+    gateway_cli = Path(__file__).parent.parent / "gateway" / "cli.py"
 
     cmd = [
         sys.executable,
         str(gateway_cli),
-        "--host", args.host,
-        "--port", str(args.port),
-        "--log-level", args.log_level,
+        "--host", host,
+        "--port", str(port),
+        "--log-level", log_level,
     ]
 
-    if args.reload:
+    if reload:
         cmd.append("--reload")
 
+    console.print(Panel.fit("🌐 Starting Gateway Server", style="blue"))
+    console.print(f"Host: [cyan]{host}[/cyan]")
+    console.print(f"Port: [cyan]{port}[/cyan]")
+
     try:
-        return subprocess.call(cmd)
+        subprocess.call(cmd)
     except KeyboardInterrupt:
-        print("\n👋 Gateway server stopped")
-        return 0
+        console.print("\n[yellow]Gateway server stopped[/yellow]")
 
 
-def create_parser() -> argparse.ArgumentParser:
-    """Create the argument parser."""
-    parser = argparse.ArgumentParser(
-        prog="orkit",
-        description="Orkit Crew CLI - Multi-Agent AI System",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=f"""
-Environment Variables:
-  ORKIT_GATEWAY_URL    Gateway server URL (default: {DEFAULT_GATEWAY_URL})
-
-Examples:
-  %(prog)s task "Plan a marketing campaign" --crew planning
-  %(prog)s status <task_id>
-  %(prog)s cancel <task_id>
-  %(prog)s crews
-  %(prog)s serve
-        """,
-    )
-
-    subparsers = parser.add_subparsers(dest="command", help="Available commands")
-
-    # task command
-    task_parser = subparsers.add_parser(
-        "task",
-        help="Submit a new task",
-        description="Submit a new task to be processed by a crew.",
-    )
-    task_parser.add_argument(
-        "description",
-        help="Task description",
-    )
-    task_parser.add_argument(
-        "--crew",
-        default="planning",
-        choices=["planning", "coding"],
-        help="Crew type to handle the task (default: planning)",
-    )
-    task_parser.set_defaults(func=cmd_task)
-
-    # status command
-    status_parser = subparsers.add_parser(
-        "status",
-        help="Get task status",
-        description="Get the current status of a task.",
-    )
-    status_parser.add_argument(
-        "task_id",
-        help="Task ID",
-    )
-    status_parser.set_defaults(func=cmd_status)
-
-    # cancel command
-    cancel_parser = subparsers.add_parser(
-        "cancel",
-        help="Cancel a task",
-        description="Cancel a running or pending task.",
-    )
-    cancel_parser.add_argument(
-        "task_id",
-        help="Task ID",
-    )
-    cancel_parser.set_defaults(func=cmd_cancel)
-
-    # crews command
-    crews_parser = subparsers.add_parser(
-        "crews",
-        help="List available crews",
-        description="List all available crew types.",
-    )
-    crews_parser.set_defaults(func=cmd_crews)
-
-    # serve command
-    serve_parser = subparsers.add_parser(
-        "serve",
-        help="Start Gateway server",
-        description="Start the Orkit Crew Gateway server.",
-    )
-    serve_parser.add_argument(
-        "--host",
-        default="127.0.0.1",
-        help="Host to bind to (default: 127.0.0.1)",
-    )
-    serve_parser.add_argument(
-        "--port",
-        type=int,
-        default=8000,
-        help="Port to bind to (default: 8000)",
-    )
-    serve_parser.add_argument(
-        "--reload",
-        action="store_true",
-        help="Enable auto-reload for development",
-    )
-    serve_parser.add_argument(
-        "--log-level",
-        default="info",
-        choices=["debug", "info", "warning", "error", "critical"],
-        help="Logging level (default: info)",
-    )
-    serve_parser.set_defaults(func=cmd_serve)
-
-    return parser
-
-
-def main() -> int:
+def main() -> Any:
     """Main entry point."""
-    parser = create_parser()
-    args = parser.parse_args()
-
-    if not args.command:
-        parser.print_help()
-        return 1
-
-    return args.func(args)
+    return app()
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
