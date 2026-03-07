@@ -460,6 +460,21 @@ class SessionManager:
         self._update_timestamp()
         self._save_session()
 
+    def track_file(self, file_path: str, task_title: str = "") -> None:
+        """Track a generated file with optional task context.
+
+        Args:
+            file_path: Path to generated file.
+            task_title: Optional task title for context.
+        """
+        self.add_generated_file(file_path)
+
+        # Log to generation log
+        log_entry = f"Generated: `{file_path}`"
+        if task_title:
+            log_entry += f" (Task: {task_title})"
+        self.save_generation_log(log_entry)
+
     def log_conversation(self, role: str, content: str, metadata: dict[str, Any] | None = None) -> None:
         """Log a conversation entry.
 
