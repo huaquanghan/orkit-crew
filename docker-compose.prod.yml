@@ -1,0 +1,44 @@
+version: "3.8"
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: orkit-app-prod
+    ports:
+      - "8000:8000"
+    environment:
+      - PLANNO_URL=${PLANNO_URL}
+      - PLANNO_API_KEY=${PLANNO_API_KEY}
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-gpt-5.4}
+      - APP_ENV=production
+      - LOG_LEVEL=${LOG_LEVEL:-WARN}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - sessions:/app/sessions
+      - workspace:/app/workspace
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  sessions:
+    driver: local
+  workspace:
+    driver: local
