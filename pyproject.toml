@@ -1,35 +1,21 @@
 [project]
 name = "orkit-crew"
-version = "0.1.0"
-description = "AI Crew Orchestration System with Planno Gateway"
+version = "0.2.0"
+description = "PRD-to-Product AI Pipeline — Generate Next.js projects from PRD documents"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
-authors = [
-    {name = "Orkit Team", email = "team@orkit.dev"}
-]
-keywords = ["crewai", "ai", "agents", "llm", "orchestration"]
-classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-]
 
 dependencies = [
     "crewai>=0.95.0",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
-    "click>=8.0.0",
     "httpx>=0.27.0",
-    "redis>=5.0.0",
-    "qdrant-client>=1.9.0",
     "python-dotenv>=1.0.0",
     "rich>=13.0.0",
     "typer>=0.12.0",
+    "pyyaml>=6.0.0",
+    "python-frontmatter>=1.1.0",
 ]
 
 [project.optional-dependencies]
