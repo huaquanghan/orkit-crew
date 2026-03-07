@@ -17,6 +17,14 @@ from orkit_crew.core.prd_parser import (
     parse_prd,
     validate_prd,
 )
+from orkit_crew.core.session import (
+    ConversationEntry,
+    PhaseState,
+    PhaseStatus,
+    PipelinePhase,
+    SessionData,
+    SessionManager,
+)
 
 __all__ = [
     "Settings",
@@ -36,4 +44,11 @@ __all__ = [
     "FeaturePriority",
     "parse_prd",
     "validate_prd",
+    # Session Manager
+    "SessionManager",
+    "SessionData",
+    "PipelinePhase",
+    "PhaseStatus",
+    "PhaseState",
+    "ConversationEntry",
 ]
