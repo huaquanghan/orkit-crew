@@ -2,18 +2,31 @@ version: "3.8"
 
 services:
   app:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
     container_name: orkit-app
+    ports:
+      - "8000:8000"
     environment:
       - PLANNO_URL=${PLANNO_URL:-http://host.docker.internal:8787}
       - PLANNO_API_KEY=${PLANNO_API_KEY}
       - DEFAULT_MODEL=${DEFAULT_MODEL:-gpt-5.4}
       - APP_ENV=${APP_ENV:-development}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
     volumes:
-      - ./src:/app/src
-      - ./.env:/app/.env
+      - ./sessions:/app/sessions
       - ./workspace:/app/workspace
-    command: ["orkit", "--help"]
+      - ./.env:/app/.env:ro
     stdin_open: true
     tty: true
+    command: ["orkit", "--help"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
